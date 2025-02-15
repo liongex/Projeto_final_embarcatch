@@ -29,7 +29,8 @@ bool repeating_timer_callback(struct repeating_timer *t);
 int main() {
     
     setup();
-    add_repeating_timer_ms(2000, repeating_timer_callback, NULL, &timer);
+
+    add_repeating_timer_ms(2000, repeating_timer_callback, NULL, &timer);//Timer de 2 segundos para a realização da medição;
 
     do{
         tight_loop_contents();
