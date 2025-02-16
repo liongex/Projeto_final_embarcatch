@@ -38,7 +38,7 @@ add_subdirectory(dht)
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(Projeto_final_embarcatch Projeto_final_embarcatch.c pwm_motor.c )
+add_executable(Projeto_final_embarcatch Projeto_final_embarcatch.c pwm_motor.c ssd1306.c )
 
 pico_set_program_name(Projeto_final_embarcatch "Projeto_final_embarcatch")
 pico_set_program_version(Projeto_final_embarcatch "0.1")
@@ -66,6 +66,8 @@ target_link_libraries(Projeto_final_embarcatch
         hardware_pio
         dht
         hardware_pwm
+        hardware_i2c
+        hardware_adc
         )
 
 pico_add_extra_outputs(Projeto_final_embarcatch)
