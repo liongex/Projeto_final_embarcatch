@@ -11,6 +11,10 @@ OS DADOS. NO DISPLAY DO DISPOSITIVO, O USUÁRIO TAMBÉM PODE VERIFICAR ESSES VAL
 ENTRE O CONTROLE DE VELOCIDADE AUTOMÁTICO OU MANUAL. O CONTROLE MANUAL TEM SUA VELOCIDADE AJUSATADA ATRAVÉS DO 
 USO DOS BOTÕES. ALÉM DISSO, O LED EXIBE UMA ESCALA INTUITIVA E CHAMATIVA DE COR QUE SE RELACIONA COM A 
 INDUICAÇÃO DO CONFORTO TÉRMICO. DESSA FORMA, É FACILITADA A COMPREENSÃO DOS VALORES OBTIDOS PELO USUÁRIO.
+
+abaixo o link para os gráficos no thingspeak:
+https://thingspeak.mathworks.com/channels/2842831
+
 */
 
 #include <dht.h>
@@ -31,8 +35,8 @@ INDUICAÇÃO DO CONFORTO TÉRMICO. DESSA FORMA, É FACILITADA A COMPREENSÃO DOS
 
 #define PWM_PIN 19
 
-#define BOTTON_A 5
-#define BOTTON_B 6
+#define BOTTON_A 5 // botão para diminuir velocidade
+#define BOTTON_B 6 // botão para aumentar velocidade
 
 #define I2C_PORT i2c1 // módulo i2c usado
 #define I2C_SDA 14 // pino para comunicação i2c
@@ -40,12 +44,22 @@ INDUICAÇÃO DO CONFORTO TÉRMICO. DESSA FORMA, É FACILITADA A COMPREENSÃO DOS
 #define LED_B 12 // pino led azul
 #define LED_R 13 // pino led vermelho
 #define LED_G 11 //pino led verde
-#define SW 22 //Pino do Botão do Joystick
+#define SW 22 //Pino do Botão do Joystick para navegar no menu
 #define VRY 26 //Porta ADC de variação do Y do Joystick
 #define VRX 27 //Porta ADC de variação do X do joystick
 
 // Define o tempo de debounce em milissegundos
 #define DEBOUNCE_TIME_MS 50
+
+#define WIFI_SSID "brisa-1279160" // SSID da rede wifi
+#define WIFI_PASS "xax7iprn" // Senha da rede wifi
+#define THINGSPEAK_HOST "api.thingspeak.com" // host do servidor
+#define THINGSPEAK_PORT 80 // Porta de conexão
+
+#define API_KEY "LR6SZUXRLAKWCZYP"  // Chave de escrita do ThingSpeak
+
+struct tcp_pcb *tcp_client_pcb;
+ip_addr_t server_ip;
 
 ssd1306_t disp;//variável display do Oled
 static volatile bool ativo = 0;
@@ -75,20 +89,32 @@ float indice;
 bool semaforo = false;
 
 struct repeating_timer timer; // varíavel para armazenamento do tempo do temporizador
+struct repeating_timer timer2; // varíavel para armazenamento do tempo do temporizador
 
 //Funções declaradas no código
 void setup();
+int setup_wifi();
 void medir_dht();
 bool repeating_timer_callback(struct repeating_timer *t);
+bool repeating_timer_callback2(struct repeating_timer *t);
 void setup_leds();// função para configuração padrão dos leds
 static void gpio_irq_handler(uint gpio, uint32_t events);// função de callback da interrupção
 
+// Callback quando recebe resposta do ThingSpeak
+static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
+
+// Callback quando a conexão TCP é estabelecida
+static err_t http_connected_callback(void *arg, struct tcp_pcb *tpcb, err_t err);
+
+// Resolver DNS e conectar ao servidor
+static void dns_callback(const char *name, const ip_addr_t *ipaddr, void *callback_arg);
 
 
 int main() {
 
     setup();
     setup_leds();
+    setup_wifi();
     uint countdown = 0; //verificar seleções para baixo do joystick
     uint countup = 1; //verificar seleções para cima do joystick
     uint pos_y=12; //inicialização de variável para ler posição do Y do Joystick
@@ -101,7 +127,7 @@ int main() {
 
     add_repeating_timer_ms(2000, repeating_timer_callback, NULL, &timer);//Timer de 2 segundos para a realização da medição;
 
-
+    add_repeating_timer_ms(18000, repeating_timer_callback2, NULL, &timer2);//Timer de 18 segundos para o envio dos dados para os servidor;
     do{
 
         if(semaforo == true && menu == 2){
@@ -193,7 +219,6 @@ void setup(){
     setup_pwm(PWM_PIN,DIVIDER_PWM, PERIOD, 500); // Inicialização do pwm
 
     //inicialização do Oled
-    stdio_init_all();
     i2c_init(I2C_PORT, 400*1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
@@ -221,6 +246,32 @@ void setup(){
     gpio_set_dir(BOTTON_B, GPIO_IN);
     gpio_pull_up(BOTTON_A);
     gpio_pull_up(BOTTON_B);
+};
+
+int setup_wifi(){
+    sleep_ms(10000);
+    printf("Iniciando servidor HTTP\n");
+
+    // Inicializa o Wi-Fi
+    if (cyw43_arch_init()) {
+        printf("Erro ao inicializar o Wi-Fi\n");
+        return 1;
+    }
+
+    cyw43_arch_enable_sta_mode();
+    printf("Conectando ao Wi-Fi...\n");
+
+    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASS, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
+        printf("Falha ao conectar ao Wi-Fi\n");
+        return 1;
+    }else {
+        printf("Connected.\n");
+        // Read the ip address in a human readable way
+        uint8_t *ip_address = (uint8_t*)&(cyw43_state.netif[0].ip_addr.addr);
+        printf("Endereço IP %d.%d.%d.%d\n", ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
+    }
+
+    printf("Wi-Fi conectado!\n");
 };
 
  //Função para obter os valores de temperatura e umidade do sensor
@@ -251,6 +302,11 @@ bool repeating_timer_callback(struct repeating_timer *t) {
     return true;
 
 }
+bool repeating_timer_callback2(struct repeating_timer *t){
+
+    dns_gethostbyname(THINGSPEAK_HOST, &server_ip, dns_callback, NULL);
+    printf("executou thigs\n");
+};
 
 //inicializa leds
 void setup_leds(){
@@ -283,6 +339,53 @@ static void gpio_irq_handler(uint gpio, uint32_t events){
         }
 };
 
+// Callback quando recebe resposta do ThingSpeak
+static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+    if (p == NULL) {
+        tcp_close(tpcb);
+        return ERR_OK;
+    }
+    printf("Resposta do ThingSpeak: %.*s\n", p->len, (char *)p->payload);
+    pbuf_free(p);
+    return ERR_OK;
+}
 
+// Callback quando a conexão TCP é estabelecida
+static err_t http_connected_callback(void *arg, struct tcp_pcb *tpcb, err_t err) {
+    if (err != ERR_OK) {
+        printf("Erro na conexão TCP\n");
+        return err;
+    }
+
+    printf("Conectado ao ThingSpeak!\n");
+
+    char request1[256];
+
+    snprintf(request1, sizeof(request1),
+        "GET /update?api_key=%s&field1=%.2f&field2=%.2f&field3=%.2f HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        API_KEY, temperature_c, humidity, indice, THINGSPEAK_HOST);
+
+
+
+    tcp_write(tpcb, request1, strlen(request1), TCP_WRITE_FLAG_COPY);
+    tcp_output(tpcb);
+    tcp_recv(tpcb, http_recv_callback);
+
+    return ERR_OK;
+}
+
+// Resolver DNS e conectar ao servidor
+static void dns_callback(const char *name, const ip_addr_t *ipaddr, void *callback_arg) {
+    if (ipaddr) {
+        printf("Endereço IP do ThingSpeak: %s\n", ipaddr_ntoa(ipaddr));
+        tcp_client_pcb = tcp_new();
+        tcp_connect(tcp_client_pcb, ipaddr, THINGSPEAK_PORT, http_connected_callback);
+    } else {
+        printf("Falha na resolução de DNS\n");
+    }
+}
 
 
