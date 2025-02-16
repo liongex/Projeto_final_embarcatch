@@ -18,8 +18,8 @@
 void setup_pwm(int PIN, float DIVIDER_PWM, uint16_t PERIOD, uint16_t pwm_level);
 
 // Função para fazer o fading
-int update_pwm(int PIN, uint16_t* pwm_new_level, float indiceDeCalor);
+void update_pwm(int PIN, uint16_t* pwm_new_level, float indiceDeCalor);
 
-
+void update_pwm2(int PIN, uint16_t* pwm_new_level);
 
 #endif

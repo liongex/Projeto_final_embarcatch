@@ -26,7 +26,7 @@ void setup_pwm(int PIN, float DIVIDER_PWM, uint16_t PERIOD, uint16_t pwm_level)
     pwm_set_enabled(slice, true);          // Habilita o PWM no slice correspondente
 };
 
-int update_pwm(int PIN, uint16_t* pwm_new_level, float indiceDeCalor)
+void update_pwm(int PIN, uint16_t* pwm_new_level, float indiceDeCalor)
 {
     // Define a faixa de valores do Índice de Calor
     float minIndice = 28.0;
@@ -50,3 +50,10 @@ int update_pwm(int PIN, uint16_t* pwm_new_level, float indiceDeCalor)
     pwm_set_gpio_level(PIN, *pwm_new_level);
 
 };
+
+void update_pwm2(int PIN, uint16_t* pwm_new_level)
+{
+    // Define o nível do PWM
+    pwm_set_gpio_level(PIN, *pwm_new_level);
+
+}

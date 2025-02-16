@@ -6,12 +6,11 @@ MATRÍCULA: 202421511720213.
 
     O PRESENTE TRABALHO TEM COMO OBJETIVO IMPLEMENTAR UM SISTEMA IOT PARA O CONTROLE DA VELOCIDADE
 DE UM VENTILADOR A PARTIR DO ÍNDICE DE CALOR DO AMBIENTE. O SISTEMA CONTA COM COMUNICAÇÃO WI-FI COM USO DO PROTOCOLO
-MQTT QUE ENVIA OS VALORES DA TEMPERATURA, UMIDADE, CONFORTO TÉRMICO E VELOCIDADE DO VENTILADOR PARA UM BROKER
-PÚBLICO, ONDE O USUÁRIO PODE VERIFICAR OS DADOS. NO DISPLAY DO DISPOSITIVO, O USUÁRIO TAMBÉM PODE VERIFICAR ESSES 
-VALORES EM UM MENU E SELECIONAR ENTRE O CONTROLE DE VELOCIDADE AUTOMÁTICO OU MANUAL. O CONTROLE MANUAL 
-TEM SUA VELOCIDADE AJUSATADA ATRAVÉS DO USO DOS BOTÕES. ALÉM DISSO, O LED EXIBE UMA ESCALA INTUITIVA E CHAMATIVA
-DE COR QUE SE RELACIONA COM A INDUICAÇÃO DO CONFORTO TÉRMICO. DESSA FORMA, É FACILITADA A COMPREENSÃO DOS 
-VALORES OBTIDOS PELO USUÁRIO.
+HTTP QUE ENVIA OS VALORES DA TEMPERATURA, UMIDADE E ÍNDICE TÉRMICO PARA O THINGSPEAK, ONDE O USUÁRIO PODE VERIFICAR
+OS DADOS. NO DISPLAY DO DISPOSITIVO, O USUÁRIO TAMBÉM PODE VERIFICAR ESSES VALORES EM UM MENU E SELECIONAR 
+ENTRE O CONTROLE DE VELOCIDADE AUTOMÁTICO OU MANUAL. O CONTROLE MANUAL TEM SUA VELOCIDADE AJUSATADA ATRAVÉS DO 
+USO DOS BOTÕES. ALÉM DISSO, O LED EXIBE UMA ESCALA INTUITIVA E CHAMATIVA DE COR QUE SE RELACIONA COM A 
+INDUICAÇÃO DO CONFORTO TÉRMICO. DESSA FORMA, É FACILITADA A COMPREENSÃO DOS VALORES OBTIDOS PELO USUÁRIO.
 */
 
 #include <dht.h>
@@ -22,15 +21,25 @@ VALORES OBTIDOS PELO USUÁRIO.
 #include "ssd1306.h"
 #include "hardware/adc.h"
 #include "hardware/pio.h"
+#include "display.h"
+#include "temperatura.h"
+#include "pico/cyw43_arch.h"
+#include "lwip/pbuf.h"
+#include "lwip/tcp.h"
+#include "lwip/dns.h"
+#include "lwip/init.h"
 
 #define PWM_PIN 19
 
-#define I2C_PORT i2c1
-#define I2C_SDA 14
-#define I2C_SCL 15
-#define LED_B 12
-#define LED_R 13
-#define LED_G 11
+#define BOTTON_A 5
+#define BOTTON_B 6
+
+#define I2C_PORT i2c1 // módulo i2c usado
+#define I2C_SDA 14 // pino para comunicação i2c
+#define I2C_SCL 15// pino para comunicação i2c
+#define LED_B 12 // pino led azul
+#define LED_R 13 // pino led vermelho
+#define LED_G 11 //pino led verde
 #define SW 22 //Pino do Botão do Joystick
 #define VRY 26 //Porta ADC de variação do Y do Joystick
 #define VRX 27 //Porta ADC de variação do X do joystick
@@ -42,7 +51,9 @@ ssd1306_t disp;//variável display do Oled
 static volatile bool ativo = 0;
 volatile uint32_t last_interrupt_time = 0;
 
-static uint menu=1;
+static uint menu = 1;
+static uint case1 = 0;
+static uint case2 = 0;
 
 const int ADC_CHANNEL_0 = 0; // Canal ADC para o eixo X do joystick
 const int ADC_CHANNEL_1 = 1; // Canal ADC para o eixo Y do joystick
@@ -67,15 +78,9 @@ struct repeating_timer timer; // varíavel para armazenamento do tempo do tempor
 
 //Funções declaradas no código
 void setup();
-char* determinarConfortoTermico(float indiceDeCalor);
-static float celsius_to_fahrenheit(float temperature);
 void medir_dht();
-float calcularIndiceDeCalor();
 bool repeating_timer_callback(struct repeating_timer *t);
 void setup_leds();// função para configuração padrão dos leds
-void print_texto(int x, int y, int tam, char * msg); // função para escrever textos
-void print_retangulo(int x1, int y1, int x2, int y2); // função para desenhar retangulo do menu
-void print_menu(int pos); // função para desenhar o menu
 static void gpio_irq_handler(uint gpio, uint32_t events);// função de callback da interrupção
 
 
@@ -88,8 +93,9 @@ int main() {
     uint countup = 1; //verificar seleções para cima do joystick
     uint pos_y=12; //inicialização de variável para ler posição do Y do Joystick
     uint posy_ant=12;//posição anterior
+    uint16_t pwm_new_manual = 500;
 
-    print_menu(pos_y);//impressão inicial do menu
+    print_menu(pos_y, &disp);//impressão inicial do menu
 
     gpio_set_irq_enabled_with_callback(SW, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler); //Função de interrupção para controle do menu através do botão
 
@@ -98,11 +104,12 @@ int main() {
 
     do{
 
-        if(semaforo){
+        if(semaforo == true && menu == 2){
 
             update_pwm(PWM_PIN, &pwm_new_level, indice);
             semaforo = 0;
             printf("valor do pwm = %d\n", pwm_new_level);
+            case2 = 0;
         } if(ativo == 0) {     
             adc_select_input(ADC_CHANNEL_1);
             uint adc_y_raw = adc_read();//leitura do joystick
@@ -123,7 +130,7 @@ int main() {
             }
             //texto do Menu
             if(pos_y!=posy_ant){//verifica se houve mudança de posição no menu.
-                print_menu(pos_y);
+                print_menu(pos_y, &disp);
             }
         }
          //verifica se botão foi pressionado. 
@@ -131,10 +138,40 @@ int main() {
         if(ativo){
             switch (menu){
             case 1:
-                gpio_put(LED_B,true);
+                if(case1 == 0){
+                    print_menu2(pos_y, &disp, pwm_new_manual);
+                    update_pwm2(PWM_PIN,&pwm_new_manual );
+                    case1 = 1;
+                }else{
+                    if(!gpio_get(BOTTON_B)){ //Bottão B para aumentar a velocidade
+                        if(pwm_new_manual < 999){
+                            pwm_new_manual += 20;
+
+                        }else{
+                            pwm_new_manual = 999;
+                        }
+                        update_pwm2(PWM_PIN,&pwm_new_manual );
+                        case1 = 0;
+                    }  else  if(!gpio_get(BOTTON_A)){ //Bottão A para diminuir a velocidade
+                        if(pwm_new_manual > 150){
+                            pwm_new_manual -= 20;
+
+                        }else{
+                            pwm_new_manual = 150;
+                        }
+                        update_pwm2(PWM_PIN,&pwm_new_manual );
+                        case1 = 0;
+                    } ; 
+
+                }
+                
             break;
             case 2:
-                gpio_put(LED_R,true);
+                if(case2 == 0){
+                print_menu3(pos_y, &disp, pwm_new_level, temperature_c, humidity, conforto);
+                case2 = 1;
+                }
+                Atualizar_cor(indice);
             break;
             default:
                 printf("erro\n");
@@ -176,27 +213,15 @@ void setup(){
     adc_init();
     adc_gpio_init(VRY);
     adc_gpio_init(VRX);
+
+    //inicialização dos botões A e B
+    gpio_init(BOTTON_A);
+    gpio_init(BOTTON_B);
+    gpio_set_dir(BOTTON_A, GPIO_IN);
+    gpio_set_dir(BOTTON_B, GPIO_IN);
+    gpio_pull_up(BOTTON_A);
+    gpio_pull_up(BOTTON_B);
 };
-
-//Função para determinar om conforto térmico
-char* determinarConfortoTermico(float indiceDeCalor) { 
-    if (indiceDeCalor < 28.0) { 
-        return "CONFORTAVEL"; 
-    } else if (indiceDeCalor < 33.0) { 
-        return "MOD. DESCONF."; 
-    } else if (indiceDeCalor < 38.0) { 
-        return "DESCONFORTAVEL"; 
-    } else if (indiceDeCalor < 45.0) { 
-        return "PERIGOSO"; 
-    } else { 
-        return "EXTR. PERIGOSO"; 
-    }
-}
-
-//Função para conversão de graus celsius para fahrenheit
-static float celsius_to_fahrenheit(float temperature) {
-    return temperature * (9.0f / 5) + 32;
- };
 
  //Função para obter os valores de temperatura e umidade do sensor
  void medir_dht(){
@@ -216,19 +241,11 @@ static float celsius_to_fahrenheit(float temperature) {
     
  };
 
-//Função para calcualr o índice de calor
- float calcularIndiceDeCalor() { 
-    return -8.784695 + 1.61139411 * temperature_c + 2.338549 * humidity - 0.14611605 * temperature_c * humidity
-    - 0.012308094 * (temperature_c * temperature_c) - 0.016424828 * (humidity * humidity)
-     + 0.002211732 * (temperature_c * temperature_c) * humidity + 0.00072546 * temperature_c * (humidity * humidity) 
-     - 0.000003582 * (temperature_c * temperature_c) * (humidity * humidity);
-     };
-
 //Função, de callback para o timer, que realiza medição de temperatura e umidade
 bool repeating_timer_callback(struct repeating_timer *t) {
 
     medir_dht();
-    indice = calcularIndiceDeCalor();
+    indice = calcularIndiceDeCalor(temperature_c,humidity);
     conforto = determinarConfortoTermico(indice);
     printf("%s\n", conforto);
     return true;
@@ -251,24 +268,6 @@ void setup_leds(){
 
 };
 
-void print_texto(int x, int y, int tam, char * msg){
-    ssd1306_draw_string(&disp, x, y, tam, msg);
-    ssd1306_show(&disp);
-}
-void print_retangulo(int x1, int y1, int x2, int y2){
-    ssd1306_draw_empty_square(&disp, x1, y1, x2, y2);
-    ssd1306_show(&disp);
-}
-
-void print_menu(int pos){
-        ssd1306_clear(&disp);//Limpa a tela
-        print_texto(0, 2, 1, "Controle Temperatura");
-        print_retangulo(2,pos+2,125,12);// print_retangulo(2,pos+2,120,12);
-        print_texto(6, 18, 1.5,"Manual");
-        print_texto(6, 30, 1.5, "Automatico");
-
-}
-
 //função da interrupção
 static void gpio_irq_handler(uint gpio, uint32_t events){
         
@@ -276,10 +275,14 @@ static void gpio_irq_handler(uint gpio, uint32_t events){
         if ((current_time - last_interrupt_time) > DEBOUNCE_TIME_MS) {
             // Código a ser executado quando o botão é pressionado
             ativo = !ativo;
+            case1 = 0;
+            case2 = 0;
             setup_leds();
             // Atualizar o tempo da última interrupção
             last_interrupt_time = current_time;
         }
 };
+
+
 
 
