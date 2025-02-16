@@ -75,6 +75,9 @@ target_link_libraries(Projeto_final_embarcatch
         hardware_pwm
         hardware_i2c
         hardware_adc
+        pico_stdlib
+        pico_lwip_http
+        pico_cyw43_arch_lwip_threadsafe_background  
         )
 
 pico_add_extra_outputs(Projeto_final_embarcatch)
